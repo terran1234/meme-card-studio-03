@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>짤·카드 스튜디오</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true"></span>
+    <div>
+      <h1>짤·카드 스튜디오</h1>
+      <p>이미지에 문구를 얹어 밈과 카드를 만들어요</p>
+    </div>
+  </div>
+  <span class="badge">브라우저 안에서만 작업 · 업로드 없음</span>
+</header>
+
+<main class="layout">
+  <section class="stage" aria-label="미리보기">
+    <div class="stage-head">
+      <span class="stage-title">미리보기</span>
+      <span id="canvas-meta" class="stage-meta">1:1 · 1080 × 1080</span>
+    </div>
+    <div class="stage-body">
+      <canvas id="canvas" width="1080" height="1080" role="img" aria-label="미리보기 캔버스"></canvas>
+    </div>
+  </section>
+
+  <aside class="tools" aria-label="편집 도구">
+    <div id="message" role="alert" aria-live="polite" hidden></div>
+
+    <fieldset id="image-tools" class="panel">
+      <legend><span class="step">1</span>이미지 도구</legend>
+
+      <label id="dropzone" class="dropzone" for="file">
+        <svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="9" cy="10" r="1.6"/><path d="m21 16-5-5-8 8"/></svg>
+        <span class="dz-title">이미지를 끌어다 놓거나 <u>파일 선택</u></span>
+        <span class="dz-sub">PNG · JPEG · 10MB 이하</span>
+      </label>
+      <input id="file" class="visually-hidden" type="file" accept="image/png,image/jpeg">
+      <p id="file-info" class="hint">불러온 이미지 없음</p>
+    </fieldset>
+
+    <fieldset id="ratio-tools" class="panel">
+      <legend><span class="step">2</span>화면비</legend>
+      <div class="segmented" role="radiogroup" aria-label="화면비">
+        <input type="radio" name="ratio" id="ratio-1-1" value="1:1" checked>
+        <label for="ratio-1-1"><i class="ratio-icon r11" aria-hidden="true"></i>1:1<small>정사각</small></label>
+        <input type="radio" name="ratio" id="ratio-4-5" value="4:5">
+        <label for="ratio-4-5"><i class="ratio-icon r45" aria-hidden="true"></i>4:5<small>피드</small></label>
+        <input type="radio" name="ratio" id="ratio-9-16" value="9:16">
+        <label for="ratio-9-16"><i class="ratio-icon r916" aria-hidden="true"></i>9:16<small>스토리</small></label>
+      </div>
+    </fieldset>
+
+    <fieldset id="text-tools" class="panel">
+      <legend><span class="step">3</span>문구 도구</legend>
+
+      <div class="field">
+        <div class="field-head">
+          <label for="text">문구 <output id="text-count" aria-live="off"></output></label>
+          <button type="button" id="fill-test" class="link-btn">검사 문구 넣기</button>
+        </div>
+        <textarea id="text" rows="3" maxlength="200" placeholder="문구를 입력하세요">안녕하세요</textarea>
+        <p id="fit-note" class="hint" role="status" hidden></p>
+      </div>
+
+      <div class="field">
+        <div class="field-head"><label for="x">가로 위치</label><output id="x-out"></output></div>
+        <input id="x" type="range" min="0" max="100" value="50">
+      </div>
+
+      <div class="field">
+        <div class="field-head"><label for="y">세로 위치</label><output id="y-out"></output></div>
+        <input id="y" type="range" min="0" max="100" value="50">
+      </div>
+
+      <div class="field">
+        <div class="field-head"><label for="size">크기</label><output id="size-out"></output></div>
+        <input id="size" type="range" min="16" max="300" value="96">
+      </div>
+
+      <div class="field">
+        <div class="field-head"><label for="color">색</label><output id="color-out"></output></div>
+        <div class="color-row">
+          <input id="color" type="color" value="#ffffff" aria-label="색 직접 선택">
+          <div class="swatches" role="group" aria-label="추천 색">
+            <button type="button" class="swatch" data-color="#ffffff" style="--c:#ffffff" aria-label="흰색"></button>
+            <button type="button" class="swatch" data-color="#111827" style="--c:#111827" aria-label="검정"></button>
+            <button type="button" class="swatch" data-color="#facc15" style="--c:#facc15" aria-label="노랑"></button>
+            <button type="button" class="swatch" data-color="#f43f5e" style="--c:#f43f5e" aria-label="빨강"></button>
+            <button type="button" class="swatch" data-color="#38bdf8" style="--c:#38bdf8" aria-label="하늘"></button>
+            <button type="button" class="swatch" data-color="#22c55e" style="--c:#22c55e" aria-label="초록"></button>
+          </div>
+        </div>
+      </div>
+    </fieldset>
+
+    <fieldset id="template-tools" class="panel">
+      <legend><span class="step">4</span>템플릿 <output id="tpl-count" class="legend-count"></output></legend>
+      <p class="hint tpl-intro">문구·위치·크기·색·화면비를 저장해 두고 다시 불러와요. 이미지는 저장하지 않아요.</p>
+
+      <div id="tpl-editing" class="editing-note" role="status" hidden></div>
+      <div class="tpl-form">
+        <label for="tpl-name" class="visually-hidden">템플릿 이름</label>
+        <input id="tpl-name" type="text" maxlength="30" placeholder="템플릿 이름" autocomplete="off">
+        <button type="button" id="tpl-save" class="btn primary">새 템플릿으로 저장</button>
+        <button type="button" id="tpl-cancel" class="btn" hidden>수정 취소</button>
+      </div>
+
+      <ul id="tpl-list" class="tpl-list" aria-label="저장된 템플릿"></ul>
+      <div class="tpl-io">
+        <button type="button" id="tpl-export" class="btn">JSON으로 내보내기</button>
+        <label for="tpl-import" class="btn tpl-import-btn">JSON 가져오기</label>
+        <input id="tpl-import" class="visually-hidden" type="file" accept="application/json,.json">
+      </div>
+      <p class="hint tpl-io-hint">가져오기는 파일 전체를 먼저 검사하고, 문제가 있으면 아무것도 바꾸지 않아요.</p>
+      <p id="tpl-empty" class="hint">저장된 템플릿이 없어요. 지금 설정을 이름과 함께 저장해 보세요.</p>
+      <p id="tpl-storage-warn" class="hint warn" hidden>이 브라우저에서는 저장이 막혀 있어서 새로고침하면 템플릿이 사라져요.</p>
+    </fieldset>
+
+    <fieldset id="export-tools" class="panel">
+      <legend><span class="step">5</span>내려받기</legend>
+      <p class="hint export-hint">지금 보이는 미리보기와 같은 크기·같은 그림으로 저장돼요.</p>
+      <div class="btn-row">
+        <button type="button" id="dl-png" class="btn primary">PNG 내려받기</button>
+        <button type="button" id="dl-jpeg" class="btn">JPEG 내려받기</button>
+      </div>
+    </fieldset>
+  </aside>
+</main>
+
+<script src="app.js"></script>
+<script src="templates.js"></script>
+</body>
+</html>
