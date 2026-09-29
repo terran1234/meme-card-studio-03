@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JSON 가져오기 검사</title>
+<style>
+  body { font-family: "Malgun Gothic", "Apple SD Gothic Neo", sans-serif; margin: 24px; color: #1c1b19; }
+  h1 { font-size: 1.25rem; margin: 0 0 4px; }
+  p { color: #555; margin: 4px 0 16px; }
+  table { border-collapse: collapse; width: 100%; font-size: .88rem; }
+  th, td { border: 1px solid #ddd; padding: 8px 10px; text-align: left; vertical-align: top; }
+  th { background: #f6f5f3; }
+  .PASS { color: #14532d; font-weight: 800; }
+  .FAIL { color: #991b1b; font-weight: 800; }
+  #summary { font-weight: 800; margin: 12px 0; }
+  iframe { position: absolute; left: -9999px; width: 1200px; height: 900px; }
+  pre { background: #f6f5f3; padding: 12px; overflow: auto; font-size: .8rem; }
+</style>
+</head>
+<body>
+<h1>JSON 가져오기 검사</h1>
+<p>정상·손상·필수 누락 등 JSON을 편집기 코드에 넣고, 거부되면 기존 템플릿이 그대로인지(저장 내용 글자까지 동일)와 가져오기 전후 건수를 대조합니다. 실행 전 이 브라우저의 템플릿을 백업하고 끝나면 되돌립니다.</p>
+<div id="summary">실행 중…</div>
+<table>
+  <thead><tr><th>번호</th><th>종류</th><th>검사 입력</th><th>예상값</th><th>결과</th><th>관찰값(전 → 후)</th></tr></thead>
+  <tbody id="rows"></tbody>
+</table>
+<h2 style="font-size:1rem">원본 결과(JSON)</h2>
+<pre id="raw"></pre>
+<iframe id="app" src="../index.html" title="편집기"></iframe>
+
+<script>
+"use strict";
+const frame = document.getElementById("app");
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+frame.addEventListener("load", async () => {
+  await wait(300);
+  const win = frame.contentWindow;
+  const T = win.studioTemplates;
+  const KEY = T.STORE_KEY;
+  const results = [];
+  const backup = localStorage.getItem(KEY); // 실행 뒤 되돌리기 위해 보관
+
+  const mk = (i, over = {}) => ({
+    id: "base-" + i, name: "기존 " + i, text: "기존 문구 " + i, x: 10 * i, y: 20 * i, size: 50 + i, color: "#112233", ratio: "1:1",
+    createdAt: 1, updatedAt: 1, ...over,
+  });
+  const file = (templates, extra = {}) => JSON.stringify({ format: "meme-card-studio-templates", version: 1, templates, ...extra });
+  const raw = () => localStorage.getItem(KEY);
+  const count = () => T.readStore().length;
+
+  function seedBase() {
+    localStorage.setItem(KEY, JSON.stringify({ version: 1, items: [mk(1), mk(2), mk(3)] }));
+  }
+
+  // 거부되어야 하는 경우: 결과 실패 + 저장 내용이 글자까지 그대로 + 건수 그대로
+  function expectReject(id, kind, input, expected, text) {
+    seedBase();
+    const snapshot = raw();
+    const before = count();
+    const r = T.importText(text);
+    const after = count();
+    const unchanged = raw() === snapshot;
+    const pass = r.ok === false && unchanged && before === after;
+    results.push({ id, kind, input, expected, result: pass ? "PASS" : "FAIL",
+      observed: `${before}개 → ${after}개, 저장 내용 동일 ${unchanged}, 거부 이유: ${(r.errors || []).join(" ").slice(0, 110)}` });
+  }
+
+  // ---- 정상 ----
+  {
+    seedBase();
+    const before = count();
+    const r = T.importText(file([
+      { id: "new-1", name: "새 템플릿 A", text: "가져온 A", x: 50, y: 50, size: 80, color: "#ff0000", ratio: "4:5" },
+      { id: "new-2", name: "새 템플릿 B", text: "가져온 B", x: 30, y: 60, size: 70, color: "#00ff00", ratio: "9:16" },
+      { id: "base-2", name: "기존 2를 덮어씀", text: "덮어쓴 문구", x: 70, y: 70, size: 99, color: "#0000ff", ratio: "1:1" },
+    ]));
+    const list = T.readStore();
+    const b2 = list.find((t) => t.id === "base-2");
+    const pass = r.ok && before === 3 && list.length === 5 && b2 && b2.name === "기존 2를 덮어씀" &&
+      list.some((t) => t.id === "base-1") && list.some((t) => t.id === "base-3") && list.some((t) => t.id === "new-1");
+    results.push({ id: "J01", kind: "정상", input: "새 2개 + 같은 id 1개를 가진 정상 파일",
+      expected: "새 2개 추가, 같은 id는 덮어쓰기, 나머지 기존 템플릿 유지 (3개 → 5개)",
+      result: pass ? "PASS" : "FAIL", observed: `${before}개 → ${list.length}개, 덮어쓴 이름 "${b2 && b2.name}"` });
+  }
+  {
+    // 내보내기 → 비우기 → 가져오기: 원래대로 복원되는가
+    seedBase();
+    T.importText(file([{ id: "rt-1", name: "왕복 시험", text: "글\n줄바꿈 😀", x: 33, y: 44, size: 55, color: "#abcdef", ratio: "9:16" }]));
+    const original = T.readStore();
+    const exported = JSON.stringify(T.exportData());
+    localStorage.removeItem(KEY);
+    const before = count();
+    const r = T.importText(exported);
+    const restored = T.readStore();
+    const strip = (l) => JSON.stringify(l.map(({ id, name, text, x, y, size, color, ratio }) => ({ id, name, text, x, y, size, color, ratio })));
+    const pass = r.ok && before === 0 && restored.length === original.length && strip(restored) === strip(original);
+    results.push({ id: "J02", kind: "정상", input: "내보낸 JSON을 비운 뒤 다시 가져오기(왕복)",
+      expected: "내보내기 전 4개와 내용이 똑같이 복원됨(줄바꿈·이모지 포함)",
+      result: pass ? "PASS" : "FAIL", observed: `${before}개 → ${restored.length}개, 내용 동일 ${strip(restored) === strip(original)}` });
+  }
+
+  // ---- 문법 손상 ----
+  expectReject("J03", "문법 손상", "닫히지 않은 JSON", "저장 전에 거부, 기존 3개 그대로", '{"templates": [ {"id": "x", "name": ');
+  expectReject("J04", "문법 손상", "JSON이 아닌 일반 글자", "저장 전에 거부, 기존 3개 그대로", "이건 JSON이 아닙니다");
+
+  // ---- 필수 누락 ----
+  const ok1 = { id: "ok-1", name: "정상 항목", text: "글", x: 50, y: 50, size: 60, color: "#ffffff", ratio: "1:1" };
+  expectReject("J05", "필수 누락", "두 번째 템플릿에 name이 없음(첫째는 정상)", "전체 거부 — 정상인 첫째도 저장되지 않음, 기존 3개 그대로",
+    file([ok1, { id: "no-name", text: "글", x: 1, y: 1, size: 60, color: "#ffffff", ratio: "1:1" }]));
+  expectReject("J06", "필수 누락", "최상위 templates 항목이 없음", "저장 전에 거부", JSON.stringify({ format: "x", version: 1, items: [ok1] }));
+  expectReject("J07", "필수 누락", "빈 templates 배열", "저장 전에 거부(가져올 것이 없음)", file([]));
+
+  // ---- 잘못된 값 ----
+  expectReject("J08", "잘못된 값", "x=999, 색='red', 화면비='7:3'", "저장 전에 거부", file([{ ...ok1, x: 999, color: "red", ratio: "7:3" }]));
+  expectReject("J09", "잘못된 값", "같은 id가 파일 안에 두 번", "저장 전에 거부", file([ok1, { ...ok1, name: "중복" }]));
+  expectReject("J10", "잘못된 값", "지원하지 않는 version=2", "저장 전에 거부", JSON.stringify({ version: 2, templates: [ok1] }));
+
+  // ---- 개수·크기 ----
+  {
+    const many = Array.from({ length: 31 }, (_, i) => ({ ...ok1, id: "many-" + i, name: "많음 " + i }));
+    expectReject("J11", "개수 초과", "한 파일에 31개", "저장 전에 거부", file(many));
+  }
+  {
+    const many = Array.from({ length: 29 }, (_, i) => ({ ...ok1, id: "fill-" + i, name: "채움 " + i }));
+    expectReject("J12", "개수 초과", "새 29개(기존 3개와 합치면 32개 > 30개)", "합쳐서 넘으면 거부, 기존 3개 그대로", file(many));
+  }
+  expectReject("J13", "크기 초과", "1MB를 넘는 텍스트", "저장 전에 거부", "x".repeat(1024 * 1024 + 10));
+
+  // ---- 공격성 입력이 들어 있어도 안전한가 ----
+  {
+    seedBase();
+    const r = T.importText(`{"__proto__": {"polluted": "yes"}, "templates": [${JSON.stringify({ ...ok1, id: "evil-1", name: "<img src=x onerror=alert(1)>" })}]}`);
+    const imgs = frame.contentDocument.querySelectorAll("#tpl-list img").length;
+    const polluted = ({}).polluted !== undefined || win.eval("({}).polluted") !== undefined;
+    const shown = Array.from(frame.contentDocument.querySelectorAll("#tpl-list .tpl-name")).map((e) => e.textContent).includes("<img src=x onerror=alert(1)>");
+    const pass = r.ok && imgs === 0 && !polluted && shown;
+    results.push({ id: "J14", kind: "안전", input: "이름이 HTML 코드이고 __proto__ 항목이 섞인 JSON",
+      expected: "이름은 글자로만 표시(<img> 0개), 객체 오염 없음",
+      result: pass ? "PASS" : "FAIL", observed: `가져오기 ${r.ok}, <img> ${imgs}개, 오염 ${polluted}, 이름이 글자로 표시 ${shown}` });
+  }
+
+  // ---- 화면 메시지: 거부 시 이유와 "기존 N개 그대로" 안내 ----
+  {
+    seedBase();
+    T.importText('{"깨진');
+    const msg = frame.contentDocument.getElementById("message");
+    const pass = msg.className === "error" && msg.textContent.includes("가져오기에 실패했습니다") && msg.textContent.includes("기존 템플릿 3개는 그대로");
+    results.push({ id: "J15", kind: "안내", input: "손상된 JSON을 넣은 직후 화면 메시지",
+      expected: "실패 이유와 '기존 템플릿 3개는 그대로입니다'가 화면에 보임",
+      result: pass ? "PASS" : "FAIL", observed: msg.textContent.slice(0, 120) });
+  }
+
+  // 사용자의 원래 템플릿 복구
+  if (backup === null) localStorage.removeItem(KEY); else localStorage.setItem(KEY, backup);
+
+  const rows = document.getElementById("rows");
+  for (const r of results) {
+    const tr = document.createElement("tr");
+    for (const v of [r.id, r.kind, r.input, r.expected, r.result, r.observed]) {
+      const td = document.createElement("td");
+      td.textContent = v;
+      if (v === "PASS" || v === "FAIL") td.className = v;
+      tr.appendChild(td);
+    }
+    rows.appendChild(tr);
+  }
+  const fails = results.filter((r) => r.result === "FAIL").length;
+  document.getElementById("summary").textContent = `총 ${results.length}건 · PASS ${results.length - fails} · FAIL ${fails}`;
+  document.getElementById("raw").textContent = JSON.stringify(results, null, 1);
+  window.__results = results;
+  document.title = "DONE " + document.title;
+});
+</script>
+</body>
+</html>

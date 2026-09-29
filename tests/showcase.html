@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>완성 이미지·메타데이터 검사</title>
+<style>
+  body { font-family: "Malgun Gothic", "Apple SD Gothic Neo", sans-serif; margin: 24px; color: #1c1b19; }
+  h1 { font-size: 1.25rem; margin: 0 0 4px; }
+  p { color: #555; margin: 4px 0 16px; }
+  table { border-collapse: collapse; width: 100%; font-size: .88rem; }
+  th, td { border: 1px solid #ddd; padding: 8px 10px; text-align: left; vertical-align: top; }
+  th { background: #f6f5f3; }
+  .PASS { color: #14532d; font-weight: 800; }
+  .FAIL { color: #991b1b; font-weight: 800; }
+  #summary { font-weight: 800; margin: 12px 0; }
+  .thumbs { display: flex; gap: 12px; flex-wrap: wrap; margin: 16px 0; }
+  .thumbs img { height: 220px; border: 1px solid #ddd; }
+  pre { background: #f6f5f3; padding: 12px; overflow: auto; font-size: .8rem; }
+</style>
+</head>
+<body>
+<h1>완성 이미지 3개 + 샘플 이미지 검사</h1>
+<p>파일을 실제로 열어 보고(디코딩), 파일 내부의 블록을 종류별로 읽어 위치 정보(EXIF/GPS)·텍스트 메타데이터가 있는지 검사합니다. 압축된 이미지 데이터 속 우연한 글자 조합에 속지 않도록 글자 검색이 아니라 <b>블록 종류</b>를 검사합니다.</p>
+<div id="summary">실행 중…</div>
+<div class="thumbs" id="thumbs"></div>
+<table>
+  <thead><tr><th>번호</th><th>검사</th><th>대상</th><th>결과</th><th>관찰값</th></tr></thead>
+  <tbody id="rows"></tbody>
+</table>
+<h2 style="font-size:1rem">원본 결과(JSON)</h2>
+<pre id="raw"></pre>
+
+<script>
+"use strict";
+const results = [];
+const rec = (id, check, target, pass, observed) => results.push({ id, check, target, result: pass ? "PASS" : "FAIL", observed });
+
+// PNG: 서명 확인 후 블록 이름을 순서대로 읽는다.
+function pngChunks(bytes) {
+  const sig = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+  if (bytes.length < 8 || !sig.every((b, i) => bytes[i] === b)) return null;
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const out = [];
+  let i = 8;
+  while (i + 8 <= bytes.length) {
+    const len = dv.getUint32(i);
+    out.push(String.fromCharCode(bytes[i + 4], bytes[i + 5], bytes[i + 6], bytes[i + 7]));
+    i += 12 + len;
+  }
+  return out;
+}
+
+// JPEG: 마커를 순서대로 읽고, 데이터가 시작(SOS)되기 전까지의 APPn/COM 마커를 모은다.
+function jpegMarkers(bytes) {
+  if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return null;
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const found = [];
+  let i = 2;
+  while (i + 4 <= bytes.length) {
+    if (bytes[i] !== 0xff) break;
+    const m = bytes[i + 1];
+    if (m === 0xd9 || m === 0xda) break; // EOI / SOS: 이후는 이미지 데이터
+    const len = dv.getUint16(i + 2);
+    let label = "0x" + m.toString(16).toUpperCase();
+    if (m >= 0xe0 && m <= 0xef) {
+      const ident = String.fromCharCode(...bytes.slice(i + 4, i + 4 + 6)).replace(/\0/g, "");
+      label = `APP${m - 0xe0}(${ident})`;
+    } else if (m === 0xfe) label = "COM";
+    found.push(label);
+    i += 2 + len;
+  }
+  return found;
+}
+
+const PNG_META = new Set(["eXIf", "tEXt", "iTXt", "zTXt", "tIME", "iCCP"]);
+
+async function loadImg(url) {
+  return new Promise((resolve, reject) => {
+    const im = new Image();
+    im.onload = () => resolve(im);
+    im.onerror = () => reject(new Error("이미지를 열 수 없음"));
+    im.src = url;
+  });
+}
+
+(async () => {
+  const manifest = await (await fetch("../showcase/manifest.json")).json();
+  const images = manifest.images;
+  const thumbs = document.getElementById("thumbs");
+
+  // C25: 서로 다른 문구 또는 비율 3개
+  const keys = new Set(images.map((m) => m.ratio + "|" + m.text));
+  rec("C25", "서로 다른 문구 또는 비율의 완성 이미지 3개", "showcase/manifest.json",
+    images.length === 3 && keys.size === 3 && new Set(images.map((m) => m.ratio)).size === 3,
+    images.map((m) => `${m.file}: ${m.ratio} "${m.text.replace(/\n/g, " / ")}"`).join(" | "));
+
+  for (const m of images) {
+    const url = "../showcase/" + m.file;
+    let bytes = null, im = null, err = null;
+    try {
+      const buf = await (await fetch(url)).arrayBuffer();
+      bytes = new Uint8Array(buf);
+      im = await loadImg(url);
+    } catch (e) { err = e; }
+
+    // C26: 정상적으로 열린다
+    const chunks = bytes ? pngChunks(bytes) : null;
+    const opens = !err && im && im.naturalWidth > 0 && chunks && chunks[0] === "IHDR" && chunks[chunks.length - 1] === "IEND";
+    const dims = im ? `${im.naturalWidth}x${im.naturalHeight}` : "-";
+    rec("C26", "정상적으로 열림(PNG 서명·IHDR~IEND·디코딩·크기 일치)", m.file,
+      opens && dims === m.size, err ? String(err) : `디코딩 ${dims} (기록 ${m.size}), ${bytes ? bytes.length : 0}바이트`);
+    if (im) { const t = document.createElement("img"); t.src = url; t.alt = m.file; thumbs.appendChild(t); }
+
+    // C27: 출처 기록
+    const okProv = m.provenance === "본인 제작" ||
+      (m.externalSourceUrl && /^https?:\/\//.test(m.externalSourceUrl) && m.license && m.license.trim() !== "");
+    rec("C27", "제작 구분 또는 출처 URL·사용 허가 근거가 기록됨", m.file, !!okProv, `구분: ${m.provenance}, 출처URL: ${m.externalSourceUrl}, 근거: ${m.license}`);
+
+    // C28: 위치·메타데이터 블록 0건
+    const meta = chunks ? chunks.filter((c) => PNG_META.has(c)) : ["(읽기 실패)"];
+    rec("C28", "위치 정보·텍스트 메타데이터 블록 0건", m.file, chunks && meta.length === 0,
+      chunks ? `블록: ${Array.from(new Set(chunks)).join(", ")} / 메타데이터 블록 ${meta.length}건` : "PNG로 읽지 못함");
+  }
+
+  // 참고: 함께 배포하는 샘플 이미지도 같은 기준으로 검사
+  for (const f of ["sample.png", "sample.jpg"]) {
+    const url = "../samples/" + f;
+    try {
+      const bytes = new Uint8Array(await (await fetch(url)).arrayBuffer());
+      if (f.endsWith(".png")) {
+        const c = pngChunks(bytes);
+        const meta = c.filter((x) => PNG_META.has(x));
+        rec("C28", "샘플 이미지: 메타데이터 블록 0건", "samples/" + f, meta.length === 0, `블록: ${Array.from(new Set(c)).join(", ")} / 메타데이터 ${meta.length}건`);
+      } else {
+        const mk = jpegMarkers(bytes);
+        const meta = mk.filter((x) => x.startsWith("APP1") || x.startsWith("APP13") || x === "COM" || /Exif|XMP|Photoshop/i.test(x));
+        rec("C28", "샘플 이미지: 메타데이터 마커 0건", "samples/" + f, meta.length === 0, `마커: ${mk.join(", ")} / 메타데이터 ${meta.length}건`);
+      }
+    } catch (e) { rec("C28", "샘플 이미지 검사", "samples/" + f, false, String(e)); }
+  }
+
+  const rows = document.getElementById("rows");
+  for (const r of results) {
+    const tr = document.createElement("tr");
+    for (const v of [r.id, r.check, r.target, r.result, r.observed]) {
+      const td = document.createElement("td");
+      td.textContent = v;
+      if (v === "PASS" || v === "FAIL") td.className = v;
+      tr.appendChild(td);
+    }
+    rows.appendChild(tr);
+  }
+  const fails = results.filter((r) => r.result === "FAIL").length;
+  document.getElementById("summary").textContent = `총 ${results.length}건 · PASS ${results.length - fails} · FAIL ${fails}`;
+  document.getElementById("raw").textContent = JSON.stringify(results, null, 1);
+  window.__results = results;
+  document.title = "DONE " + document.title;
+})();
+</script>
+</body>
+</html>

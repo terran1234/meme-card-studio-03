@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>극단 입력 12건 검사</title>
+<style>
+  body { font-family: "Malgun Gothic", "Apple SD Gothic Neo", sans-serif; margin: 24px; color: #1c1b19; }
+  h1 { font-size: 1.25rem; margin: 0 0 4px; }
+  p { color: #555; margin: 4px 0 16px; }
+  table { border-collapse: collapse; width: 100%; font-size: .9rem; }
+  th, td { border: 1px solid #ddd; padding: 8px 10px; text-align: left; vertical-align: top; }
+  th { background: #f6f5f3; }
+  .PASS { color: #14532d; font-weight: 800; }
+  .FAIL { color: #991b1b; font-weight: 800; }
+  #summary { font-weight: 800; margin: 12px 0; }
+  iframe { position: absolute; left: -9999px; width: 1200px; height: 900px; }
+  pre { background: #f6f5f3; padding: 12px; overflow: auto; font-size: .8rem; }
+</style>
+</head>
+<body>
+<h1>극단 입력 12건 검사 (+ 잘못된 입력 뒤 작업 유지 3건)</h1>
+<p>편집기(<code>../index.html</code>)를 숨은 창에 띄워 실제 코드에 입력을 넣고, 예상값과 비교합니다.</p>
+<div id="summary">실행 중…</div>
+<table>
+  <thead><tr><th>번호</th><th>검사 입력</th><th>예상값</th><th>결과</th><th>관찰값</th></tr></thead>
+  <tbody id="rows"></tbody>
+</table>
+<h2 style="font-size:1rem">원본 결과(JSON)</h2>
+<pre id="raw"></pre>
+<iframe id="app" src="../index.html" title="편집기"></iframe>
+
+<script>
+"use strict";
+const frame = document.getElementById("app");
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+frame.addEventListener("load", async () => {
+  await wait(300);
+  const S = frame.contentWindow.studio;
+  const results = [];
+  const seg = new Intl.Segmenter("ko", { granularity: "grapheme" });
+  const graphemeCount = (s) => Array.from(seg.segment(s)).length;
+  const stripWs = (s) => s.replace(/\s+/g, "");
+
+  // ---------- 도우미 ----------
+  async function makeImageFile(name, w, h, paint, type = "image/png") {
+    const c = document.createElement("canvas");
+    c.width = w; c.height = h;
+    paint(c.getContext("2d"), w, h);
+    const blob = await new Promise((r) => c.toBlob(r, type, 0.92));
+    return new File([blob], name, { type });
+  }
+  const gradient = (g, w, h) => {
+    const gr = g.createLinearGradient(0, 0, w, h);
+    gr.addColorStop(0, "#0ea5e9"); gr.addColorStop(1, "#f97316");
+    g.fillStyle = gr; g.fillRect(0, 0, w, h);
+  };
+
+  async function reset({ text = "", size = 64, ratio = "1:1", x = 50, y = 50, file = null } = {}) {
+    Object.assign(S.state, { text, size, x, y, color: "#ffffff", ratio });
+    if (S.state.image) { S.state.image.close(); S.state.image = null; }
+    if (file) await S.handleFile(file);
+    S.applyRatio();
+  }
+
+  const px = (canvas, x, y) => {
+    const d = canvas.getContext("2d", { willReadFrequently: true }).getImageData(x, y, 1, 1).data;
+    return { r: d[0], g: d[1], b: d[2], a: d[3] };
+  };
+
+  // 화면(미리보기)과 PNG 파일이 픽셀까지 같은가
+  async function pngMatchesPreview() {
+    const blob = await S.exportBlob("png");
+    const bmp = await createImageBitmap(blob);
+    const cmp = document.createElement("canvas");
+    cmp.width = bmp.width; cmp.height = bmp.height;
+    const cx = cmp.getContext("2d", { willReadFrequently: true });
+    cx.drawImage(bmp, 0, 0);
+    const a = cx.getImageData(0, 0, cmp.width, cmp.height).data;
+    const b = S.canvas.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, S.canvas.width, S.canvas.height).data;
+    if (a.length !== b.length) return { ok: false, why: `크기 다름 ${bmp.width}x${bmp.height} vs ${S.canvas.width}x${S.canvas.height}` };
+    // 그림 엔진의 반올림 흔들림(부드러운 그라데이션 확대 시 최대 2/255)은 허용한다.
+    // 위치·잘림·줄바꿈이 어긋나면 이보다 훨씬 크게 벌어진다.
+    let maxDiff = 0;
+    for (let i = 0; i < a.length; i++) { const d = Math.abs(a[i] - b[i]); if (d > maxDiff) maxDiff = d; }
+    return { ok: maxDiff <= MATCH_TOLERANCE, maxDiff, why: `최대 채널 오차 ${maxDiff}/255` };
+  }
+  const MATCH_TOLERANCE = 3;
+
+  // 문구 배치 검사: 글자 보존 / 폭 이내 / 캔버스 안에 전부 들어감 / 이모지 안 쪼개짐
+  function textReport(text) {
+    const c = S.canvas.getContext("2d");
+    const w = S.canvas.width, h = S.canvas.height;
+    const L = S.layoutText(c, S.state, w, h);
+    if (!L) return { L: null };
+    c.font = `700 ${L.size}px "Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif`;
+    const maxLine = Math.max(...L.lines.map((l) => c.measureText(l).width));
+    const last = L.top + (L.lines.length - 1) * L.lineHeight;
+    const topEdge = L.top - L.size * 0.6;
+    const bottomEdge = last + L.size * 0.6;
+    return {
+      L,
+      preserved: stripWs(L.lines.join("")) === stripWs(text),
+      graphemesIntact: graphemeCount(stripWs(L.lines.join(""))) === graphemeCount(stripWs(text)),
+      widthOk: maxLine <= w * S.TEXT_MAX_WIDTH + 1,
+      fitsCanvas: topEdge >= 0 && bottomEdge <= h,
+      detail: `줄 ${L.lines.length}, 글자크기 ${Math.round(L.size)}px, 최장줄 ${Math.round(maxLine)}/${Math.round(w * S.TEXT_MAX_WIDTH)}px, 블록 y ${Math.round(topEdge)}~${Math.round(bottomEdge)} / 높이 ${h}`,
+    };
+  }
+
+  function record(id, input, expected, pass, observed) {
+    results.push({ id, input, expected, result: pass ? "PASS" : "FAIL", observed });
+  }
+
+  const KO_LONG = "대한민국의 아름다운 사계절을 담은 사진에 한 줄 문구를 얹어서 친구들에게 공유해 보세요 ".repeat(2).slice(0, 120);
+  const baseImg = () => makeImageFile("base.png", 1200, 900, gradient);
+
+  // ---------- 12건 ----------
+  {
+    await reset({ text: KO_LONG, size: 64, file: await baseImg() });
+    const r = textReport(KO_LONG);
+    record("01", "긴 한글 120자, 64px, 1:1", "글자 손실 없이, 폭 이내로 줄바꿈되고 캔버스 안에 전부 보임",
+      r.preserved && r.widthOk && r.fitsCanvas, r.detail);
+  }
+  {
+    const t = "https://example.com/" + "a".repeat(80);
+    await reset({ text: t, size: 64, file: await baseImg() });
+    const r = textReport(t);
+    record("02", "공백 없는 긴 영문 주소 100자, 64px", "글자 단위로 줄바꿈되어 폭 이내, 글자 손실 없음",
+      r.preserved && r.widthOk && r.fitsCanvas, r.detail);
+  }
+  {
+    const t = "Hello 안녕 World 世界 123 ABCdef 가나다 !?@# ".repeat(3);
+    await reset({ text: t, size: 64, file: await baseImg() });
+    const r = textReport(t);
+    record("03", "한글·영문·한자·숫자·기호 혼합", "글자 손실 없음, 폭 이내, 캔버스 안",
+      r.preserved && r.widthOk && r.fitsCanvas, r.detail);
+  }
+  {
+    const t = "첫째 줄\n\n셋째 줄(위는 빈 줄)\n넷째\n\n\n일곱째 줄";
+    await reset({ text: t, size: 48, file: await baseImg() });
+    const r = textReport(t);
+    record("04", "수동 줄바꿈 7줄(빈 줄 포함), 48px", "줄 수가 7줄 그대로 유지됨",
+      r.L && r.L.lines.length === 7 && r.fitsCanvas, r.detail);
+  }
+  {
+    const t = "😀😃😄😁😆😅🤣😂🙂😉".repeat(3);
+    await reset({ text: t, size: 96, file: await baseImg() });
+    const r = textReport(t);
+    record("05", "단순 이모지 30개, 96px", "이모지가 하나도 깨지지 않고 폭 이내, 캔버스 안",
+      r.preserved && r.graphemesIntact && r.widthOk && r.fitsCanvas, r.detail);
+  }
+  {
+    const t = "👨‍👩‍👧‍👦🇰🇷👍🏽🏳️‍🌈".repeat(6);
+    const bad = [];
+    for (let size = 60; size <= 130; size += 5) {
+      await reset({ text: t, size, file: await baseImg() });
+      const r = textReport(t);
+      if (!r.graphemesIntact) bad.push(size);
+    }
+    record("06", "복합 이모지(가족·국기·피부색·무지개 깃발) 반복, 글자크기 60~130px 훑기", "어떤 크기에서도 이모지가 줄 경계에서 쪼개지지 않음",
+      bad.length === 0, bad.length ? `쪼개진 글자크기: ${bad.join(", ")}px` : "모든 크기에서 온전함");
+  }
+  {
+    await reset({ text: "", file: await baseImg() });
+    let err = null, m = { ok: false };
+    try { m = await pngMatchesPreview(); } catch (e) { err = e; }
+    record("07", "빈 문구", "오류 없이 이미지만 그려지고 파일과 화면이 같음",
+      !err && m.ok && S.layoutText(S.canvas.getContext("2d"), S.state, S.canvas.width, S.canvas.height) === null,
+      err ? String(err) : "문구 없음, 화면=파일");
+  }
+  {
+    await reset({ text: "   \n  \n\t", file: await baseImg() });
+    let err = null, m = { ok: false };
+    try { m = await pngMatchesPreview(); } catch (e) { err = e; }
+    record("08", "공백·줄바꿈만 있는 문구", "빈 문구처럼 처리되고 화면=파일",
+      !err && m.ok, err ? String(err) : "문구 없음으로 처리, 화면=파일");
+  }
+  {
+    const tall = await makeImageFile("tall.png", 500, 3000, gradient);
+    const notes = [];
+    let ok = true;
+    for (const ratio of ["1:1", "4:5", "9:16"]) {
+      await reset({ text: "세로 사진 " + ratio, size: 64, ratio, file: tall });
+      const m = await pngMatchesPreview();
+      const corners = [[0, 0], [S.canvas.width - 1, 0], [0, S.canvas.height - 1], [S.canvas.width - 1, S.canvas.height - 1]];
+      const filled = corners.every(([x, y]) => px(S.canvas, x, y).a === 255);
+      ok = ok && m.ok && filled;
+      notes.push(`${ratio}: 화면=파일 ${m.ok}(${m.why}), 네 모서리 채워짐 ${filled}`);
+    }
+    record("09", "세로로 아주 긴 이미지 500×3000, 세 화면비", "세 화면비 모두 화면=파일이고 빈 여백 없이 꽉 참", ok, notes.join(" / "));
+  }
+  {
+    const wide = await makeImageFile("wide.png", 4000, 300, gradient);
+    const notes = [];
+    let ok = true;
+    for (const ratio of ["1:1", "4:5", "9:16"]) {
+      await reset({ text: "가로 사진 " + ratio, size: 64, ratio, file: wide });
+      const m = await pngMatchesPreview();
+      const corners = [[0, 0], [S.canvas.width - 1, 0], [0, S.canvas.height - 1], [S.canvas.width - 1, S.canvas.height - 1]];
+      const filled = corners.every(([x, y]) => px(S.canvas, x, y).a === 255);
+      ok = ok && m.ok && filled;
+      notes.push(`${ratio}: 화면=파일 ${m.ok}(${m.why}), 네 모서리 채워짐 ${filled}`);
+    }
+    record("10", "가로로 아주 긴 이미지 4000×300, 세 화면비", "세 화면비 모두 화면=파일이고 빈 여백 없이 꽉 참", ok, notes.join(" / "));
+  }
+  {
+    // 왼쪽 절반은 완전 투명, 오른쪽 절반은 빨강인 PNG
+    const transparent = await makeImageFile("transparent.png", 800, 800, (g, w, h) => {
+      g.clearRect(0, 0, w, h); g.fillStyle = "#e11d48"; g.fillRect(w / 2, 0, w / 2, h);
+    });
+    await reset({ text: "", ratio: "1:1", file: transparent });
+    const preview = px(S.canvas, 100, 540);            // 투명 영역
+    const jpeg = await S.exportBlob("jpeg");
+    const bmp = await createImageBitmap(jpeg);
+    const c = document.createElement("canvas"); c.width = bmp.width; c.height = bmp.height;
+    const cx = c.getContext("2d", { willReadFrequently: true }); cx.drawImage(bmp, 0, 0);
+    const f = cx.getImageData(100, 540, 1, 1).data;
+    const previewOpaque = preview.a === 255;
+    const jpegLight = f[0] > 200 && f[1] > 200 && f[2] > 200;
+    record("11", "일부가 투명한 PNG를 JPEG로 저장", "투명 영역이 화면과 파일 모두 밝은 배경(흰색)으로 나오고 검정이 되지 않음",
+      previewOpaque && jpegLight, `화면 투명영역 alpha=${preview.a}, JPEG 같은 자리 RGB=(${f[0]},${f[1]},${f[2]})`);
+  }
+  {
+    const t = "글자가 아주 큰 경우에도 화면 밖으로 넘치지 않아야 합니다 ".repeat(3).slice(0, 100);
+    await reset({ text: t, size: 300, file: await baseImg() });
+    const r = textReport(t);
+    record("12", "글자 300px + 한글 100자, 1:1", "글자가 캔버스 밖으로 넘치지 않고 전부 보임(필요하면 자동으로 줄임)",
+      r.preserved && r.widthOk && r.fitsCanvas, r.detail);
+  }
+
+  // ---------- C16: 잘못된 입력 뒤 작업 유지 ----------
+  {
+    await reset({ text: "지켜야 하는 문구", size: 80, x: 30, y: 70, file: await baseImg() });
+    const keep = () => ({ img: S.state.image, text: S.state.text, size: S.state.size, x: S.state.x, y: S.state.y, ratio: S.state.ratio, dataUrl: S.canvas.toDataURL() });
+    const msgBox = frame.contentDocument.getElementById("message");
+
+    const good = await baseImg();
+    const truncated = new File([(await good.arrayBuffer()).slice(0, 300)], "broken.png", { type: "image/png" });
+    const pngHeader = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const oversize = new File([pngHeader, new Uint8Array(10 * 1024 * 1024 + 1)], "huge.png", { type: "image/png" });
+    const empty = new File([], "empty.png", { type: "image/png" });
+
+    for (const [id, label, file] of [
+      ["C16-a", "앞부분만 있는 깨진 PNG(서명은 정상)", truncated],
+      ["C16-b", "10MB를 넘는 PNG", oversize],
+      ["C16-c", "0바이트 파일", empty],
+    ]) {
+      const before = keep();
+      await S.handleFile(file);
+      await wait(100);
+      const after = keep();
+      const same = before.img === after.img && before.text === after.text && before.size === after.size &&
+        before.x === after.x && before.y === after.y && before.ratio === after.ratio && before.dataUrl === after.dataUrl;
+      const msgShown = msgBox.className === "error" && msgBox.textContent.length > 0 && !msgBox.hidden;
+      record(id, label, "기존 이미지·문구·위치·화면비가 그대로이고 거부 이유가 표시됨", same && msgShown,
+        `작업 유지 ${same}, 이유 표시 ${msgShown}: ${msgBox.textContent.slice(0, 40)}`);
+    }
+  }
+
+  // ---------- 출력 ----------
+  const rows = document.getElementById("rows");
+  for (const r of results) {
+    const tr = document.createElement("tr");
+    for (const v of [r.id, r.input, r.expected, r.result, r.observed]) {
+      const td = document.createElement("td");
+      td.textContent = v;
+      if (v === "PASS" || v === "FAIL") td.className = v;
+      tr.appendChild(td);
+    }
+    rows.appendChild(tr);
+  }
+  const fails = results.filter((r) => r.result === "FAIL").length;
+  document.getElementById("summary").textContent = `총 ${results.length}건 · PASS ${results.length - fails} · FAIL ${fails}`;
+  document.getElementById("raw").textContent = JSON.stringify(results, null, 1);
+  window.__results = results;
+  document.title = "DONE " + document.title;
+});
+</script>
+</body>
+</html>
